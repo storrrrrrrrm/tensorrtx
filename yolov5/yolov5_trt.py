@@ -104,6 +104,8 @@ class YoLov5TRT(object):
             if engine.binding_is_input(binding):
                 self.input_w = engine.get_binding_shape(binding)[-1]
                 self.input_h = engine.get_binding_shape(binding)[-2]
+                print('engine input_w:{}'.format(self.input_w))
+                print('engine input_h:{}'.format(self.input_h))
                 host_inputs.append(host_mem)
                 cuda_inputs.append(cuda_mem)
             else:
