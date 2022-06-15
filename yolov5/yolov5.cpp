@@ -375,39 +375,63 @@ int main(int argc, char** argv) {
     uint8_t* img_host = nullptr;
     uint8_t* img_device = nullptr;
     // prepare input data cache in pinned memory 
+    // 从pinned memory拷贝数据到gpu上速度更快.malloc分配的内存是pageable memory.cudaMallocHost分配的是pinned memory.
     CUDA_CHECK(cudaMallocHost((void**)&img_host, MAX_IMAGE_INPUT_SIZE_THRESH * 3));
     // prepare input data cache in device memory
     CUDA_CHECK(cudaMalloc((void**)&img_device, MAX_IMAGE_INPUT_SIZE_THRESH * 3));
     int fcount = 0;
     std::vector<cv::Mat> imgs_buffer(BATCH_SIZE);
+    auto start = std::chrono::system_clock::now();
+    auto end = std::chrono::system_clock::now();
     for (int f = 0; f < (int)file_names.size(); f++) {
+        std::cout<<"processing "<<file_names[f]<<std::endl;
         fcount++;
         if (fcount < BATCH_SIZE && f + 1 != (int)file_names.size()) continue;
         //auto start = std::chrono::system_clock::now();
         float* buffer_idx = (float*)buffers[inputIndex];
         for (int b = 0; b < fcount; b++) {
+            start = std::chrono::system_clock::now();
             cv::Mat img = cv::imread(img_dir + "/" + file_names[f - fcount + 1 + b]);
+            end = std::chrono::system_clock::now();
+            std::cout << "imread time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+
             if (img.empty()) continue;
             imgs_buffer[b] = img;
             size_t  size_image = img.cols * img.rows * 3;
             size_t  size_image_dst = INPUT_H * INPUT_W * 3;
+
+            start = std::chrono::system_clock::now();
             //copy data to pinned memory
             memcpy(img_host,img.data,size_image);
             //copy data to device memory
             CUDA_CHECK(cudaMemcpyAsync(img_device,img_host,size_image,cudaMemcpyHostToDevice,stream));
+            end = std::chrono::system_clock::now();
+            std::cout << "data copy time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+
+            start = std::chrono::system_clock::now();
             preprocess_kernel_img(img_device, img.cols, img.rows, buffer_idx, INPUT_W, INPUT_H, stream);       
+            end = std::chrono::system_clock::now();
+
             buffer_idx += size_image_dst;
         }
+        // end = std::chrono::system_clock::now();
+        // std::cout << "preprocess time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+
         // Run inference
-        auto start = std::chrono::system_clock::now();
+        start = std::chrono::system_clock::now();
         doInference(*context, stream, (void**)buffers, prob, BATCH_SIZE);
-        auto end = std::chrono::system_clock::now();
+        end = std::chrono::system_clock::now();
         std::cout << "inference time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+        
+        start = std::chrono::system_clock::now();
         std::vector<std::vector<Yolo::Detection>> batch_res(fcount);
         for (int b = 0; b < fcount; b++) {
             auto& res = batch_res[b];
             nms(res, &prob[b * OUTPUT_SIZE], CONF_THRESH, NMS_THRESH);
         }
+        start = std::chrono::system_clock::now();
+        std::cout << "postprocess time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+
         for (int b = 0; b < fcount; b++) {
             auto& res = batch_res[b];
             cv::Mat img = imgs_buffer[b];
